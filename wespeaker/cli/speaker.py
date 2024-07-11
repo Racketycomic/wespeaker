@@ -135,13 +135,17 @@ class Speaker:
         embeddings = np.vstack(embeddings)
         return embeddings
 
-    def extract_embedding(self, audio_path: str):
+    def extract_embedding(self, audio_path: str,end_sample,start_sample):
+        
         pcm, sample_rate = torchaudio.load(audio_path,
+                                           frame_offset=start_sample, 
+                                           num_frames=end_sample - start_sample,
                                            normalize=self.wavform_norm)
+        
         if self.apply_vad:
             # TODO(Binbin Zhang): Refine the segments logic, here we just
             # suppose there is only silence at the start/end of the speech
-            wav = read_audio(audio_path)
+            wav = self.customised_read_audio(audio_path)
             segments = get_speech_timestamps(wav, self.vad, return_seconds=True)
             pcmTotal = torch.Tensor()
             if len(segments) > 0:  # remove all the silence
@@ -168,6 +172,38 @@ class Speaker:
             outputs = outputs[-1] if isinstance(outputs, tuple) else outputs
         embedding = outputs[0].to(torch.device('cpu'))
         return embedding
+
+    def customised_read_audio(
+                end_sample,
+               start_sample,
+                path: str,
+               sampling_rate: int = 16000):
+        list_backends = torchaudio.list_audio_backends()
+        
+        wav, sr = torchaudio.load(path,frame_offset=start_sample,num_frames=end_sample - start_sample)
+        assert len(list_backends) > 0, 'The list of available backends is empty, please install backend manually. \
+                                        \n Recommendations: \n \tSox (UNIX OS) \n \tSoundfile (Windows OS, UNIX OS) \n \tffmpeg (Windows OS, UNIX OS)'
+
+        try:
+            effects = [
+                ['channels', '1'],
+                ['rate', str(sampling_rate)]
+            ]
+
+            wav, sr = torchaudio.sox_effects.apply_effects_tensor(wav, effects=effects)
+        except:
+
+            if wav.size(0) > 1:
+                wav = wav.mean(dim=0, keepdim=True)
+
+            if sr != sampling_rate:
+                transform = torchaudio.transforms.Resample(orig_freq=sr,
+                                                        new_freq=sampling_rate)
+                wav = transform(wav)
+                sr = sampling_rate
+
+        assert sr == sampling_rate
+        return wav.squeeze(0)
 
     def extract_embedding_list(self, scp_path: str):
         names = []
