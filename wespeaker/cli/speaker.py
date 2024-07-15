@@ -17,7 +17,7 @@ import os
 import sys
 
 import numpy as np
-from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+from silero_vad import load_silero_vad, read_audio, get_speech_timestamps, customised_read_audio
 import torch
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
@@ -135,17 +135,13 @@ class Speaker:
         embeddings = np.vstack(embeddings)
         return embeddings
 
-    def extract_embedding(self, audio_path: str,end_sample,start_sample):
-        
+    def extract_embedding(self, audio_path: str):
         pcm, sample_rate = torchaudio.load(audio_path,
-                                           frame_offset=start_sample, 
-                                           num_frames=end_sample - start_sample,
                                            normalize=self.wavform_norm)
-        
         if self.apply_vad:
             # TODO(Binbin Zhang): Refine the segments logic, here we just
             # suppose there is only silence at the start/end of the speech
-            wav = self.customised_read_audio(audio_path)
+            wav = read_audio(audio_path)
             segments = get_speech_timestamps(wav, self.vad, return_seconds=True)
             pcmTotal = torch.Tensor()
             if len(segments) > 0:  # remove all the silence
@@ -172,38 +168,48 @@ class Speaker:
             outputs = outputs[-1] if isinstance(outputs, tuple) else outputs
         embedding = outputs[0].to(torch.device('cpu'))
         return embedding
+    
+    def customised_extract_embedding(self, pcm,sample_rate):
+        """
+        Extract embeddings for segmented audio samples
 
-    def customised_read_audio(
-                end_sample,
-               start_sample,
-                path: str,
-               sampling_rate: int = 16000):
-        list_backends = torchaudio.list_audio_backends()
-        
-        wav, sr = torchaudio.load(path,frame_offset=start_sample,num_frames=end_sample - start_sample)
-        assert len(list_backends) > 0, 'The list of available backends is empty, please install backend manually. \
-                                        \n Recommendations: \n \tSox (UNIX OS) \n \tSoundfile (Windows OS, UNIX OS) \n \tffmpeg (Windows OS, UNIX OS)'
+        Args:
+            pcm (torchaudio.Tensor): A segmented audio tensor
+            sample_rate (Int): _description_
 
-        try:
-            effects = [
-                ['channels', '1'],
-                ['rate', str(sampling_rate)]
-            ]
-
-            wav, sr = torchaudio.sox_effects.apply_effects_tensor(wav, effects=effects)
-        except:
-
-            if wav.size(0) > 1:
-                wav = wav.mean(dim=0, keepdim=True)
-
-            if sr != sampling_rate:
-                transform = torchaudio.transforms.Resample(orig_freq=sr,
-                                                        new_freq=sampling_rate)
-                wav = transform(wav)
-                sr = sampling_rate
-
-        assert sr == sampling_rate
-        return wav.squeeze(0)
+        Returns:
+            _type_: Embedding Tensor
+        """
+        if self.apply_vad:
+            # TODO(Binbin Zhang): Refine the segments logic, here we just
+            # suppose there is only silence at the start/end of the speech
+            wav = customised_read_audio(pcm,sample_rate)
+            segments = get_speech_timestamps(wav, self.vad, return_seconds=True)
+            pcmTotal = torch.Tensor()
+            if len(segments) > 0:  # remove all the silence
+                for segment in segments:
+                    start = int(segment['start'] * sample_rate)
+                    end = int(segment['end'] * sample_rate)
+                    pcmTemp = pcm[0, start:end]
+                    pcmTotal = torch.cat([pcmTotal, pcmTemp], 0)
+                pcm = pcmTotal.unsqueeze(0)
+            else:  # all silence, nospeech
+                return None
+        pcm = pcm.to(torch.float)
+        if sample_rate != self.resample_rate:
+            pcm = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=self.resample_rate)(pcm)
+        feats = self.compute_fbank(pcm,
+                                   sample_rate=self.resample_rate,
+                                   cmn=True)
+        feats = feats.unsqueeze(0)
+        feats = feats.to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            outputs = self.model(feats)
+            outputs = outputs[-1] if isinstance(outputs, tuple) else outputs
+        embedding = outputs[0].to(torch.device('cpu'))
+        return embedding
 
     def extract_embedding_list(self, scp_path: str):
         names = []
