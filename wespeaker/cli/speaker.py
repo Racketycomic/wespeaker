@@ -234,6 +234,15 @@ class Speaker:
         cosine_score = torch.dot(e1, e2) / (torch.norm(e1) * torch.norm(e2))
         cosine_score = cosine_score.item()
         return (cosine_score + 1.0) / 2  # normalize: [-1, 1] => [0, 1]
+    
+    
+    def customised_similarity(self,audio_tensor1,audio_tensor2,sr) -> float:
+        e1 = self.customised_extract_embedding(audio_tensor1,sr)
+        e2 = self.customised_extract_embedding(audio_tensor2,sr)
+        if e1 is None or e2 is None:
+            return 0.0
+        else:
+            return self.cosine_similarity(e1, e2)
 
     def register(self, name: str, audio_path: str):
         if name in self.table:
